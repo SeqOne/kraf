@@ -6,36 +6,16 @@ import tables
 
 # KRAF stands for "K-mer Recalibrated Allele Frequency"
 
-var
-  fai : Fai
-  fasta : string
-  bam : string
-  vcf : string
-  t : bool
-  k : int = 31
-  padding : int = 5 # Padding around the deletion (sould be < k)
+const kraf_version = "0.0.1"
 
-let doc = format("""
-Usage: kraf <fasta> <bam> <vcf>
-
-Arguments:
-
-  <fasta>         Reference genome in FASTA format.
-  <bam>           BAM files with aligned reads
-  <vcf>           VCF files with called variants
-""")
-
-let args = docopt(doc)
-
-fasta = $args["<fasta>"]
-bam   = $args["<bam>"]
-vcf   = $args["<vcf>"]
-
-# Open fasta index to seek for k-mers
-t = open(fai, fasta)
+type
+  VarKmers = tuple
+    ref_kmers: seq[string]
+    alt_kmers: seq[string]
+    var_key: string
 
 # Handy procedure to get sequence from 1-based input coordinates
-proc getSeq(chr: string, start_pos: int, end_pos: int): string =
+proc getSeq(fai: Fai, chr: string, start_pos: int, end_pos: int): string =
   get(fai, chr, start_pos - 1, end_pos - 1)
 
 var
@@ -75,66 +55,140 @@ proc kmersMedian(kmer_hash: var Table[string, int], kmers: var seq[string]) : fl
     v: int
     values: seq[float] = @[]
   for kmer in kmers:
-    v = kmer_hash[kmer]
-    # Do not account for 0 count that could arise from an other variant beeing close to the deletion
-    if v != 0:
-      values.add(v.float)
-  result = median(values)
-  
-
-# Set deletion position
-var
-  chr = "17"
-  spos = 7573967 # This base is the first deleted base
-  epos = 7574002 # This base is the last deleted base
-
-# TODO Should we get the canonic k-mers for all k-mers that are going to be counted in the BAM ?
-
-type
-  KmerCount = tuple
-    kmer: string
-    count: int
+    if kmer_hash.hasKey(kmer):
+      v = kmer_hash[kmer]
+      # Do not account for 0 count that could arise from an other variant beeing close to the deletion
+      if v != 0:
+        values.add(v.float)
+  stderr.writeLine repr(kmers)
+  if len(values) == 0:
+    result = 0
+  else:
+    stderr.writeLine repr(values)
+    result = median(values)
 
 var
+  fai : Fai
+  v : VCF
+  b : Bam
+  fasta : string
+  bam : string
+  vcf : string
+  t : bool
+  verbose : bool = false
+  k : int = 31
+  padding : int = 5 # Padding around the deletion (sould be < k)
+  threads : int = 4
+  min_del_size : int = 10
+
+let doc = format("""
+version: $version
+
+Usage: kraf [options] <fasta> <bam> <vcf>
+
+Arguments:
+    <fasta>           Reference genome in FASTA format.
+    <bam>             BAM files with aligned reads
+    <vcf>             VCF files with called variants
+
+Options:
+    -k <int>          K-mer size to use for recalibration. [default: 31]
+    -p <int>          Padding size of k-mers around the deletion. [default: 5]
+    -t <int>          Number of decompression threads. [default: 4]
+    --min-del <int>   Minimun deletion size elligible for AF recalibration [default: 10]
+    -v, --verbose     Enable verbose mode
+""", @["version", kraf_version])
+
+let args = docopt(doc)
+
+# Parse arguments
+fasta         = $args["<fasta>"]
+bam           = $args["<bam>"]
+vcf           = $args["<vcf>"]
+
+# Parse options
+k             = parseInt($args["-k"])
+padding       = parseInt($args["-p"])
+threads       = parseInt($args["-t"])
+min_del_size  = parseInt($args["--min-del"])
+
+if args["--verbose"]:
+  verbose = true
+
+if padding >= k:
+  quit "Padding value must be inferior to k"
+
+# Open fasta index to seek for k-mers
+if not open(fai, fasta):
+  quit "Failed to open FASTA file"
+
+var
+  chr : string 
+  spos : int # This base is the first deleted base
+  epos : int # This base is the last deleted base
   kleft : string
   kright : string
   kmer : string
+  var_key : string
   canon_kmer : string
   revcomp_kmer : string
   kmer_hash = initTable[string, int]() # Hash table to count for k-mers
-  del_kmers : seq[string] = @[]
-  ref_kmers : seq[string] = @[]
+  variant_hash = initTable[string, VarKmers]()
+  vark : VarKmers
 
-# Build k-mers for the deletions
-for i in (spos - k + padding)..(spos - padding):
-  # Get left part of the k-mer
-  kleft = getSeq(chr, i, spos - 1)
-  # Get right part of the k-mer
-  kright = getSeq(chr, epos + 1, epos + (k - len(kleft)))
-  # Merge both part of the k-mer targeting the deletion
-  kmer = kleft & kright
-  # Get canonical k-mer
-  kmer = canonicalKmer(kmer)
-  del_kmers.add(kmer)
-  # Init the k-mer hash for this k-mer
-  kmer_hash[kmer] = 0
+# Parse VCF to construct k-mers for recalibrating VAF of deletions
+# Open VCF file
+if not open(v, vcf):
+  quit "Failed to open VCF file"
 
-# Build k-mers for the reference (not deleted) sequence
-for i in (spos - k + padding)..(epos - padding + 1):
-  kmer = getSeq(chr, i, i + k - 1)
-  # Get canonical k-mer
-  kmer = canonicalKmer(kmer)
-  ref_kmers.add(kmer)
-  # Init the k-mer hash for this k-mer
-  kmer_hash[kmer] = 0
+# Quit if VCF has more than one sample!!!
+if v.n_samples != 1:
+  quit "only works for 1 sample"
 
-# stderr.writeLine '------------\nDeletion k-mers\n'
-# for k in del_kmers:
-#   stderr.writeLine k
+for rec in v:
+  # Test if we have a deletion (strict mode for now, no indel style)
+  if len(rec.REF) > min_del_size:
+    for alt in rec.ALT:
+      if len(alt) == 1:
+        chr = $rec.CHROM
+        spos = rec.POS + 1
+        epos = rec.POS + len(rec.REF) - 1
 
-# stderr.writeLine '\n------------\nReference k-mers\n'
-# for k in ref_kmers:
-#   stderr.writeLine k
+        var_key = chr & '-' & $rec.POS & '-' & rec.REF & '-' & alt
+
+        if verbose:
+          stderr.writeLine "Adding deletion : ", var_key
+        
+        # Init the Variant Tuple
+        vark = (ref_kmers: @[], alt_kmers: @[], var_key: var_key)
+
+        # Build k-mers for the deletions
+        for i in (spos - k + padding)..(spos - padding):
+          # Get left part of the k-mer
+          kleft = getSeq(fai, chr, i, spos - 1)
+          # Get right part of the k-mer
+          kright = getSeq(fai, chr, epos + 1, epos + (k - len(kleft)))
+          # Merge both part of the k-mer targeting the deletion
+          kmer = kleft & kright
+          # Get canonical k-mer
+          kmer = canonicalKmer(kmer)
+          vark.alt_kmers.add(kmer)
+          # Init the k-mer hash for this k-mer
+          kmer_hash[kmer] = 0
+
+        # Build k-mers for the reference (not deleted) sequence
+        for i in (spos - k + padding)..(epos - padding + 1):
+          kmer = getSeq(fai, chr, i, i + k - 1)
+          # Get canonical k-mer
+          kmer = canonicalKmer(kmer)
+          vark.ref_kmers.add(kmer)
+          # Init the k-mer hash for this k-mer
+          kmer_hash[kmer] = 0
+        
+        # Add the variant to the variant hash
+        variant_hash[var_key] = vark
+
+close(v)
 
 # TODO Before counting k-mers in the BAM we should check the reference 
 # to remove k-mers with duplicated location on the genome, etc.
@@ -142,26 +196,31 @@ for i in (spos - k + padding)..(epos - padding + 1):
 # Loop over the BAM files to count the k-mers
 # open a bam and look for the index.
 var 
-  b:Bam
   read: string
   revcomp_read: string
   nb_reads: int = 0
 
 # Open the bam file
-open(b, bam, index=true)
+open(b, bam, index=true, threads=threads)
 
-echo "Reading read sequence in BAM file to recalibrate VAF"
+if b == nil:
+    quit "could not open bam file"
+if b.idx == nil:
+    quit "could not open bam index"
+
+if verbose:
+  stderr.writeLine "Reading read sequence in BAM file to recalibrate VAF"
+
 for record in b:
   # Skip duplicate reads based on flag
   if record.flag.dup:
     continue
   # TODO skip bad sequence based on quality
-  # TODO use canonical k-mers instead of counting both
   read = sequence(record, read)
   revcomp_read = revcomp(read)
   nb_reads += 1
-  if (nb_reads mod 10000 == 0):
-    echo nb_reads, " parsed ..."
+  if verbose and nb_reads mod 10000 == 0:
+    stderr.writeLine nb_reads, " parsed ..."
 
   for i in 0..(len(read) - k):
     kmer = read[i .. i + k - 1]
@@ -173,23 +232,64 @@ for record in b:
     if kmer_hash.hasKey(canon_kmer):
       kmer_hash[canon_kmer] += 1
 
-  # # Count for Revcomp k-mers
-  # read = revcomp(read)
-  # for i in 0..(len(read) - k):
-  #   kmer = read[i .. i + k - 1]
-  #   if kmer_hash.hasKey(kmer):
-  #     kmer_hash[kmer] += 1
-
+# Now we open the VCF a second time to print updated VAF
 var
-  ref_median: float = kmersMedian(kmer_hash, ref_kmers)
-  alt_median: float = kmersMedian(kmer_hash, del_kmers)
-  refined_vaf = alt_median / ref_median
+  ref_median : float
+  alt_median : float
+  refined_vaf : float32
+  old_vaf : float32
 
-echo "Ref median: ", ref_median
-echo "Alt median: ", alt_median
-echo "Refined VAF: ", refined_vaf
+t = open(v, vcf)
 
-# TODO Only replace original VAF at certain condition:
-#         - New VAF is higher than the previous one
-#         - New VAF is no more than X fold higer
-# TODO Keep the old VAF in a new field : OLD_AF
+if v.header.add_format("OLD_AF", "1", "Float", "old AF when replaced by KRAF") != Status.OK:
+  quit "unable to add OLD_AF to the header"
+
+# Print headers
+stdout.write v.header
+
+for rec in v:
+  for alt in rec.ALT:
+    var_key = $rec.CHROM & '-' & $rec.POS & '-' & rec.REF & '-' & alt
+    if variant_hash.hasKey(var_key) :
+      
+      # Get the deletion ref & alt k-mers and compute median counts for both
+      vark = variant_hash[var_key]
+      ref_median  = kmersMedian(kmer_hash, vark.ref_kmers)
+      alt_median  = kmersMedian(kmer_hash, vark.alt_kmers)
+
+      # TODO We should handle cases with multi-allelic variants on the same loci !!!
+      refined_vaf = alt_median / (ref_median + alt_median)
+
+      var floats = newSeq[float32](1)
+
+      if rec.format.get("AF", floats) != Status.OK:
+        quit "missing AF field for a deletion variant"
+
+      old_vaf = floats[0]
+      
+      if verbose:
+        stderr.writeLine "\nUpdated DELETION: ", var_key
+        stderr.writeLine "Ref median: ", ref_median
+        stderr.writeLine "Alt median: ", alt_median
+        stderr.writeLine "Refined VAF: ", refined_vaf
+        stderr.writeLine "Old VAF: ", old_vaf
+      
+      # Skip refined VAF if is lower than the previous one
+      if refined_vaf <= old_vaf:
+        continue
+      elif refined_vaf > 1:
+        continue
+      elif refined_vaf > 4 * old_vaf: # This seems very unlikely to happened and be true
+        continue
+
+      if rec.format.set("OLD_AF", floats) != Status.OK:
+        quit "error setting OLD_AF in VCF"
+
+      # Set the new VAF
+      floats[0] = refined_vaf
+
+      if rec.format.set("AF", floats) != Status.OK:
+        quit "error setting AF in VCF"
+
+  # Echo the record (modified or not)
+  stdout.write rec.tostring()
