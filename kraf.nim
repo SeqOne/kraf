@@ -236,12 +236,29 @@ for record in b:
 var
   ref_median : float
   alt_median : float
+  depth : int32
+  alternate_obs : int32
+  reference_obs : int32
   refined_vaf : float32
   old_vaf : float32
 
 t = open(v, vcf)
 
-if v.header.add_format("OLD_AF", "1", "Float", "old AF when replaced by KRAF") != Status.OK:
+
+
+# Add headers for AO and AD (if not yet present)
+# ##INFO=<ID=AO,Number=A,Type=Integer,Description="Count of full observations of this alternate haplotype.">
+if v.header.add_format("AO", "A", "Integer", "Count of full observations of this alternate haplotype.") != Status.OK:
+  quit "unable to add AO to the header"
+# ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+if v.header.add_format("AD", "R", "Integer", "Allelic depths for the ref and alt alleles in the order listed.") != Status.OK:
+  quit "unable to add AD to the header"
+
+if v.header.add_format("OLD_AF", "1", "Float", "Old AF value that have been replaced by KRAF") != Status.OK:
+  quit "unable to add OLD_AF to the header"
+if v.header.add_format("OLD_AO", "1", "Float", "Old AO value that have been replaced by KRAF") != Status.OK:
+  quit "unable to add OLD_AF to the header"
+if v.header.add_format("OLD_AD", "1", "Float", "Old AD value that have been replaced by KRAF") != Status.OK:
   quit "unable to add OLD_AF to the header"
 
 # Print headers
@@ -261,11 +278,19 @@ for rec in v:
       refined_vaf = alt_median / (ref_median + alt_median)
 
       var floats = newSeq[float32](1)
+      var one_int = newSeq[int32](1)
+      var two_ints = newSeq[int32](2)
 
-      if rec.format.get("AF", floats) != Status.OK:
+      if rec.format.get("AF", floats) == Status.OK:
+        old_vaf = floats[0]
+      else:
         quit "missing AF field for a deletion variant"
+      
+      if rec.format.get("DP", one_int) == Status.OK:
+        depth = one_int[0]
+      else:
+        quit "missing DP field for a deletion variant"
 
-      old_vaf = floats[0]
       
       if verbose:
         stderr.writeLine "\nUpdated DELETION: ", var_key
@@ -290,6 +315,28 @@ for rec in v:
 
       if rec.format.set("AF", floats) != Status.OK:
         quit "error setting AF in VCF"
+
+      # Keep old values if they are found
+      if rec.format.get("AO", one_int) == Status.OK:
+        if rec.format.set("OLD_AO", one_int) != Status.OK:
+          quit "error setting OLD_AO in VCF"
+
+      if rec.format.get("AD", two_ints) == Status.OK:
+        if rec.format.set("OLD_AD", two_ints) != Status.OK:
+          quit "error setting OLD_AD in VCF"
+
+      # We compute Alternate observation from original DP as we could
+      # have underestimated depth with exact k-mers due to sequencing errors
+      alternate_obs = (refined_vaf * depth.float()).int32
+
+      one_int[0] = alternate_obs
+      if rec.format.set("AO", one_int) != Status.OK:
+        quit "error setting AO in VCF"
+
+      two_ints[0] = depth - alternate_obs
+      two_ints[1] = alternate_obs
+      if rec.format.set("AD", two_ints) != Status.OK:
+        quit "error setting AD in VCF"
 
   # Echo the record (modified or not)
   stdout.write rec.tostring()

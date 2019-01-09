@@ -33,8 +33,14 @@ Options:
     -v, --verbose     Enable verbose mode
 ```
 
-When an AF is replaced in the FORMAT field a new TAG named "OLD_AF" is append in order
-to keep the trace of the previous AF computed by the caller.
+KRAF will set the following values in the FORMAT field of the sample :
+- AO : Number of alternate observations
+- AD : Allelic depths for the ref and alt alleles in the order listed.
+- AF : Allele Frequency
+
+When an AF, AO and AD are beeing replaced in the FORMAT field a new TAG named "OLD_TAG" (ex: OLD_AF) 
+is appended in order to keep the trace of the previous values computed by the caller and replaced
+by KRAF.
 
 Beware of these Kraf limitations :
 
