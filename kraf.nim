@@ -48,7 +48,7 @@ proc canonicalKmer(s: var string) : string =
 proc median(xs: seq[float]): float =
   var ys = xs
   sort(ys, system.cmp[float])
-  0.5 * (ys[ys.high div 2] + ys[ys.len div 2]) 
+  0.5 * (ys[ys.high div 2] + ys[ys.len div 2])
 
 proc kmersMedian(kmer_hash: var Table[string, int], kmers: var seq[string]) : float =
   var
@@ -123,7 +123,7 @@ if not open(fai, fasta):
   quit "Failed to open FASTA file"
 
 var
-  chr : string 
+  chr : string
   spos : int # This base is the first deleted base
   epos : int # This base is the last deleted base
   kleft : string
@@ -158,7 +158,7 @@ for rec in v:
 
         if verbose:
           stderr.writeLine "Adding deletion : ", var_key
-        
+
         # Init the Variant Tuple
         vark = (ref_kmers: @[], alt_kmers: @[], var_key: var_key)
 
@@ -184,18 +184,18 @@ for rec in v:
           vark.ref_kmers.add(kmer)
           # Init the k-mer hash for this k-mer
           kmer_hash[kmer] = 0
-        
+
         # Add the variant to the variant hash
         variant_hash[var_key] = vark
 
 close(v)
 
-# TODO Before counting k-mers in the BAM we should check the reference 
+# TODO Before counting k-mers in the BAM we should check the reference
 # to remove k-mers with duplicated location on the genome, etc.
 
 # Loop over the BAM files to count the k-mers
 # open a bam and look for the index.
-var 
+var
   read: string
   revcomp_read: string
   nb_reads: int = 0
@@ -268,7 +268,7 @@ for rec in v:
   for alt in rec.ALT:
     var_key = $rec.CHROM & '-' & $rec.POS & '-' & rec.REF & '-' & alt
     if variant_hash.hasKey(var_key) :
-      
+
       # Get the deletion ref & alt k-mers and compute median counts for both
       vark = variant_hash[var_key]
       ref_median  = kmersMedian(kmer_hash, vark.ref_kmers)
@@ -280,25 +280,23 @@ for rec in v:
       var floats = newSeq[float32](1)
       var one_int = newSeq[int32](1)
       var two_ints = newSeq[int32](2)
+      var two_ints_ad_field = newSeq[int32](2)
 
-      if rec.format.get("AF", floats) == Status.OK:
-        old_vaf = floats[0]
-      else:
-        quit "missing AF field for a deletion variant"
-      
       if rec.format.get("DP", one_int) == Status.OK:
         depth = one_int[0]
       else:
         quit "missing DP field for a deletion variant"
 
-      
+      if rec.format.get("AD", two_ints_ad_field) == Status.OK:
+        old_vaf = two_ints_ad_field[1] / depth
+
       if verbose:
         stderr.writeLine "\nUpdated DELETION: ", var_key
         stderr.writeLine "Ref median: ", ref_median
         stderr.writeLine "Alt median: ", alt_median
         stderr.writeLine "Refined VAF: ", refined_vaf
         stderr.writeLine "Old VAF: ", old_vaf
-      
+
       # Skip refined VAF if is lower than the previous one
       if refined_vaf <= old_vaf:
         continue
@@ -307,14 +305,14 @@ for rec in v:
       elif refined_vaf > 4 * old_vaf: # This seems very unlikely to happened and be true
         continue
 
-      if rec.format.set("OLD_AF", floats) != Status.OK:
-        quit "error setting OLD_AF in VCF"
+      # if rec.format.set("OLD_AF", floats) != Status.OK:
+      #   quit "error setting OLD_AF in VCF"
 
       # Set the new VAF
       floats[0] = refined_vaf
 
-      if rec.format.set("AF", floats) != Status.OK:
-        quit "error setting AF in VCF"
+      # if rec.format.set("AF", floats) != Status.OK:
+      #   quit "error setting AF in VCF"
 
       # Keep old values if they are found
       if rec.format.get("AO", one_int) == Status.OK:
