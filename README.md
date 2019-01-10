@@ -12,6 +12,21 @@ Kraf uses a k-mers strategy to recalibrate the Allele frequency of these deletio
 using the signal observed on the k-mer level. This strategy is alignment-free and
 results for this variants into a better estimation of the AF.
 
+Kraf process as follow, each deletion is being processed and converted in two set of k-mers :
+- *alt k-mers* : that overlap the breakpoint and will help to capture reads with the deletion
+- *ref k-mers* : that overlap the reference sequence that was deleted and will help to capture reads without a deletion
+
+These k-mers are then quantified in the reads sequences from the BAM files. All reads are processed (even unmapped)
+except duplicates.
+
+Finally we take the median of the *alt k-mers* counts and the median of the *ref k-mers* counts and
+we compute a refined VAF based on those values. 
+
+The refined VAF is only set if :
+- it is superior the previous computed VAF (extracted from either AF or AD field)
+- it is inferior to 1 (miscounting of the deletion k-mers could produce this behaviour)
+- it comprised between the previous VAF and 4 times the previous VAF.
+
 ## Usage
 
 Kraf takes in input the reference genome in fasta format, a BAM file and the VCF with
