@@ -289,6 +289,10 @@ for rec in v:
 
       if rec.format.get("AD", two_ints_ad_field) == Status.OK:
         old_vaf = two_ints_ad_field[1] / depth
+      elif rec.format.get("AF", floats) == Status.OK:
+        old_vaf = floats[0]
+      else:
+        quit "missing AF or AD field to compute previous VAF"
 
       if verbose:
         stderr.writeLine "\nUpdated DELETION: ", var_key
@@ -304,17 +308,12 @@ for rec in v:
         continue
       elif refined_vaf > 4 * old_vaf: # This seems very unlikely to happened and be true
         continue
-
-      # if rec.format.set("OLD_AF", floats) != Status.OK:
-      #   quit "error setting OLD_AF in VCF"
-
-      # Set the new VAF
-      floats[0] = refined_vaf
-
-      # if rec.format.set("AF", floats) != Status.OK:
-      #   quit "error setting AF in VCF"
-
-      # Keep old values if they are found
+      
+      # Keep old values for AF, AO & AD if they are found
+      if rec.format.get("AF", floats) == Status.OK:
+        if rec.format.set("OLD_AF", floats) != Status.OK:
+          quit "error setting OLD_AF in VCF"
+      
       if rec.format.get("AO", one_int) == Status.OK:
         if rec.format.set("OLD_AO", one_int) != Status.OK:
           quit "error setting OLD_AO in VCF"
@@ -327,10 +326,17 @@ for rec in v:
       # have underestimated depth with exact k-mers due to sequencing errors
       alternate_obs = (refined_vaf * depth.float()).int32
 
+      # Set AF
+      floats[0] = refined_vaf
+      if rec.format.set("AF", floats) != Status.OK:
+        quit "error setting AF in VCF"
+      
+      # Set AO
       one_int[0] = alternate_obs
       if rec.format.set("AO", one_int) != Status.OK:
         quit "error setting AO in VCF"
-
+      
+      # Set AD
       two_ints[0] = depth - alternate_obs
       two_ints[1] = alternate_obs
       if rec.format.set("AD", two_ints) != Status.OK:
