@@ -25,7 +25,7 @@ we compute a refined VAF based on those values.
 The refined VAF is only set if :
 - it is superior the previous computed VAF (extracted from either AF or AD field)
 - it is inferior to 1 (miscounting of the deletion k-mers could produce this behaviour)
-- it comprised between the previous VAF and 4 times the previous VAF.
+- **[desactivated]** it comprised between the previous VAF and 4 times the previous VAF.
 
 ## Usage
 

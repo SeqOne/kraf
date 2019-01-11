@@ -306,8 +306,8 @@ for rec in v:
         continue
       elif refined_vaf > 1:
         continue
-      elif refined_vaf > 4 * old_vaf: # This seems very unlikely to happened and be true
-        continue
+      # elif refined_vaf > 4 * old_vaf: # This seems very unlikely to happened and be true
+      #   continue
       
       # Keep old values for AF, AO & AD if they are found
       if rec.format.get("AF", floats) == Status.OK:
