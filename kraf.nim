@@ -6,7 +6,7 @@ import tables
 
 # KRAF stands for "K-mer Recalibrated Allele Frequency"
 
-const kraf_version = "0.0.1"
+const kraf_version = "0.0.2"
 
 type
   VarKmers = tuple
