@@ -253,6 +253,9 @@ if v.header.add_format("AO", "A", "Integer", "Count of full observations of this
 # ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
 if v.header.add_format("AD", "R", "Integer", "Allelic depths for the ref and alt alleles in the order listed.") != Status.OK:
   quit "unable to add AD to the header"
+# ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+if v.header.add_format("AF", "1", "Float", "Allele Frequency.") != Status.OK:
+  quit "unable to add AF to the header"
 
 if v.header.add_format("OLD_AF", "1", "Float", "Old AF value that have been replaced by KRAF") != Status.OK:
   quit "unable to add OLD_AF to the header"
