@@ -77,3 +77,11 @@ Compile kraf binary and place it somewhere available from your `$PATH`:
 git clone https://gitlab.seq.one/workset/kraf.git && cd kraf
 make
 ```
+
+## TODO
+
+- Handle deletion with Multi-allelic variants. If we have other variants in front
+  of the deletion, we need to take them into account during the k-mer recalibration
+  otherwise we will overestimate the VAF of the deletion.
+  *For example : an homozygous variant in front of a small deletion, will likely cause
+  the recalibrated VAF to be around 1 even if in reality it is 0.01.*
