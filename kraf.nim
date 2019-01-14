@@ -278,6 +278,13 @@ for rec in v:
       alt_median  = kmersMedian(kmer_hash, vark.alt_kmers)
 
       # TODO We should handle cases with multi-allelic variants on the same loci !!!
+
+      # We failed at finding k-mers for either the reference or the alternative
+      # We therefor skip the recalibration
+      if (ref_median + alt_median) == 0:
+        continue
+      
+      # Compute the refined VAF
       refined_vaf = alt_median / (ref_median + alt_median)
 
       var floats = newSeq[float32](1)
