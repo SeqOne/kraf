@@ -261,7 +261,7 @@ if v.header.add_format("OLD_AF", "1", "Float", "Old AF value that have been repl
   quit "unable to add OLD_AF to the header"
 if v.header.add_format("OLD_AO", "1", "Float", "Old AO value that have been replaced by KRAF") != Status.OK:
   quit "unable to add OLD_AF to the header"
-if v.header.add_format("OLD_AD", "1", "Float", "Old AD value that have been replaced by KRAF") != Status.OK:
+if v.header.add_format("OLD_AD", "R", "Integer", "Old AD value that have been replaced by KRAF") != Status.OK:
   quit "unable to add OLD_AF to the header"
 
 # Print headers
@@ -283,7 +283,7 @@ for rec in v:
       # We therefor skip the recalibration
       if (ref_median + alt_median) == 0:
         continue
-      
+
       # Compute the refined VAF
       refined_vaf = alt_median / (ref_median + alt_median)
 
@@ -318,12 +318,12 @@ for rec in v:
         continue
       # elif refined_vaf > 4 * old_vaf: # This seems very unlikely to happened and be true
       #   continue
-      
+
       # Keep old values for AF, AO & AD if they are found
       if rec.format.get("AF", floats) == Status.OK:
         if rec.format.set("OLD_AF", floats) != Status.OK:
           quit "error setting OLD_AF in VCF"
-      
+
       if rec.format.get("AO", one_int) == Status.OK:
         if rec.format.set("OLD_AO", one_int) != Status.OK:
           quit "error setting OLD_AO in VCF"
@@ -340,12 +340,12 @@ for rec in v:
       floats[0] = refined_vaf
       if rec.format.set("AF", floats) != Status.OK:
         quit "error setting AF in VCF"
-      
+
       # Set AO
       one_int[0] = alternate_obs
       if rec.format.set("AO", one_int) != Status.OK:
         quit "error setting AO in VCF"
-      
+
       # Set AD
       two_ints[0] = depth - alternate_obs
       two_ints[1] = alternate_obs
