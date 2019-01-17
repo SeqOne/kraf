@@ -18,7 +18,7 @@ type
 
 # Handy procedure to get sequence from 1-based input coordinates
 proc getSeq(fai: Fai, chr: string, start_pos: int, end_pos: int): string =
-  get(fai, chr, start_pos - 1, end_pos - 1)
+  get(fai, chr, start_pos - 1, end_pos - 1).toUpperAscii()
 
 var
   comp_dna = {
