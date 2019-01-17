@@ -6,12 +6,14 @@ import tables
 
 # KRAF stands for "K-mer Recalibrated Allele Frequency"
 
-const kraf_version = "0.0.2"
+const kraf_version = "0.1.0"
 
 type
+  KmerSeq = seq[string]
+  KmerArray = seq[KmerSeq]
   VarKmers = tuple
-    ref_kmers: seq[string]
-    alt_kmers: seq[string]
+    ref_kmers: KmerArray
+    alt_kmers: KmerArray
     var_key: string
 
 # Handy procedure to get sequence from 1-based input coordinates
@@ -45,22 +47,33 @@ proc canonicalKmer(s: var string) : string =
   else:
     result = revcomp_s
 
+# TODO Create procedures to generate the k-mers for SNV, Indel, Ins & Del event
+# This will break down the code into smaller pieces mores testable and will
+# prepare the ground for Kraf evolutions.
+# proc deletionKmers(chr: var string, spos: int, epos: int, k: int, padding: int) : KmerSeq =
+
 proc median(xs: seq[float]): float =
   var ys = xs
   sort(ys, system.cmp[float])
   0.5 * (ys[ys.high div 2] + ys[ys.len div 2])
 
-proc kmersMedian(kmer_hash: var Table[string, int], kmers: var seq[string]) : float =
+proc kmersMedian(kmer_hash: var Table[string, int], kmers: var KmerArray) : float =
   var
     v: int
     values: seq[float] = @[]
-  for kmer in kmers:
-    if kmer_hash.hasKey(kmer):
-      v = kmer_hash[kmer]
-      # Do not account for 0 count that could arise from an other variant beeing close to the deletion
-      if v != 0:
-        values.add(v.float)
+  for kmer_seq in kmers:
+    v = 0
+    # For all k-mers at this position we merge their values
+    for kmer in kmer_seq:
+      if kmer_hash.hasKey(kmer):
+        v += kmer_hash[kmer]
+        # Do not account for 0 count that could arise from an other variant beeing close to the deletion
+      else:
+        stderr.writeLine "Kmer not in hash table !!!"
+    if v != 0:
+      values.add(v.float)
   stderr.writeLine repr(kmers)
+  stderr.writeLine repr(values)
   if len(values) == 0:
     result = 0
   else:
@@ -70,6 +83,7 @@ proc kmersMedian(kmer_hash: var Table[string, int], kmers: var seq[string]) : fl
 var
   fai : Fai
   v : VCF
+  v_query : VCF
   b : Bam
   fasta : string
   bam : string
@@ -77,7 +91,7 @@ var
   t : bool
   verbose : bool = false
   k : int = 31
-  padding : int = 5 # Padding around the deletion (sould be < k)
+  padding : int = 10 # Padding around the deletion (sould be < k)
   threads : int = 4
   min_del_size : int = 10
 
@@ -130,6 +144,7 @@ var
   kright : string
   kmer : string
   var_key : string
+  var_key2 : string
   canon_kmer : string
   revcomp_kmer : string
   kmer_hash = initTable[string, int]() # Hash table to count for k-mers
@@ -141,12 +156,17 @@ var
 if not open(v, vcf):
   quit "Failed to open VCF file"
 
+# Open a second handler on the VCF to query on intervals for bi-allelic variants
+if not open(v_query, vcf):
+  quit "Failed to open VCF file"
+
 # Quit if VCF has more than one sample!!!
 if v.n_samples != 1:
   quit "only works for 1 sample"
 
 for rec in v:
   # Test if we have a deletion (strict mode for now, no indel style)
+  # TODO Adapt Kraf for delins and insertions
   if len(rec.REF) > min_del_size:
     for alt in rec.ALT:
       if len(alt) == 1:
@@ -172,18 +192,126 @@ for rec in v:
           kmer = kleft & kright
           # Get canonical k-mer
           kmer = canonicalKmer(kmer)
-          vark.alt_kmers.add(kmer)
+          # Add k-mer to the sequence of k-mers at this position
+          var a : seq[string ]= @[]
+          a.add(kmer)
+          vark.alt_kmers.add(a)
           # Init the k-mer hash for this k-mer
           kmer_hash[kmer] = 0
 
         # Build k-mers for the reference (not deleted) sequence
-        for i in (spos - k + padding)..(epos - padding + 1):
+        var
+          ref_start = spos - k + padding # First k-mer position
+          ref_end = epos - padding + 1 # Last k-mer position
+          alt_window_end = ref_end + k - 1 # Last base of the last k-mer
+
+        
+        for i in ref_start..ref_end:
           kmer = getSeq(fai, chr, i, i + k - 1)
           # Get canonical k-mer
           kmer = canonicalKmer(kmer)
-          vark.ref_kmers.add(kmer)
+          var a : seq[string ]= @[]
+          a.add(kmer)
+          vark.ref_kmers.add(a) 
           # Init the k-mer hash for this k-mer
           kmer_hash[kmer] = 0
+
+        # Build k-mers for bi-allelic variants
+        for rec in v_query.query(chr & ':' & $ref_start & '-' & $alt_window_end):
+          var ref_len = len(rec.REF)
+          for alt in rec.ALT:
+
+            # If this is the current variant, we skip it
+            var_key2 = chr & '-' & $rec.POS & '-' & rec.REF & '-' & alt
+
+            # We do not want to add the current variant as it's own co-occurence
+            if var_key == var_key2:
+              continue
+
+            if verbose:
+              stderr.writeLine "  - Adding co-occurence variant" & var_key2
+            
+            var 
+              alt_len = len(alt)
+              ins_len = alt_len - 1
+              ins_seq = alt[1 .. ins_len]
+              ins_pos = rec.POS + 1
+              del_len = ref_len - 1
+              del_pos = rec.POS + 1
+              del_end = del_pos + del_len - 1
+
+            # SNV case
+            if ref_len == alt_len and ref_len == 1:
+              #echo rec
+              for i in max(ref_start,rec.POS - k + 1)..min(ref_end,rec.POS):
+                # Get the position of the SNP in the k-mer
+                var snp_kmer_pos = rec.POS - i
+                # Get reference sequence at this position
+                # kmer = getSeq(fai, chr, i, i + k - 1)
+                kmer = vark.ref_kmers[i - ref_start][0]
+                #echo kmer
+                # Update the kmer with alternate base
+                kmer[snp_kmer_pos] = alt[0]
+                kmer = canonicalKmer(kmer)
+                #echo kmer
+                # Add the kmer to the kmer array at this position
+                vark.ref_kmers[i - ref_start].add(kmer)
+                kmer_hash[kmer] = 0
+            # Insertion case
+            elif ref_len == 1 and alt_len > 1:
+              # If the insertion can be targeted by a k-mer
+              if ins_len + 2 * padding <= k:
+                for i in max(ref_start,ins_pos - k + padding + ins_len)..min(ref_end,ins_pos - padding):
+                  # Get left part of the k-mer
+                  kleft = getSeq(fai, chr, i, rec.POS)
+                  # Get right part of the k-mer
+                  kright = getSeq(fai, chr, rec.POS + 1, rec.POS + (k - ins_len - len(kleft)))
+                  # Merge both part of the k-mer targeting the insertion 
+                  kmer = kleft & ins_seq & kright
+                  # Get canonical k-mer
+                  kmer = canonicalKmer(kmer)
+                  # Add the kmer to the kmer array at this position
+                  vark.ref_kmers[i - ref_start].add(kmer)
+                  # Init the k-mer hash for this k-mer
+                  kmer_hash[kmer] = 0
+              else:
+                # TODO In that case, maybe we should not recalibrate de VAF as we will
+                # overstimate its value ...
+                stderr.writeLine "Skip insertion variant is too long for k-mer tagging"
+            # Deletion case
+            elif alt_len == 1 and ref_len > 1:
+              for i in max(ref_start, del_pos - k + padding)..min(ref_end, del_pos - padding):
+                # Get left part of the k-mer
+                kleft = getSeq(fai, chr, i, rec.POS)
+                # Get right part of the k-mer
+                kright = getSeq(fai, chr, del_end + 1, del_end + (k - len(kleft)))
+                # Merge both part of the k-mer targeting the deletion
+                kmer = kleft & kright
+                # Get canonical k-mer
+                kmer = canonicalKmer(kmer)
+                # Add the kmer to the kmer array at this position
+                vark.ref_kmers[i - ref_start].add(kmer)
+                # Init the k-mer hash for this k-mer
+                kmer_hash[kmer] = 0
+            # Case for indel
+            else:
+              # If the insertion can be targeted by a k-mer
+              if ins_len + 2 * padding <= k:
+                for i in max(ref_start,del_pos - k + padding + ins_len)..min(ref_end,del_pos - padding):
+                  # Get left part of the k-mer
+                  kleft = getSeq(fai, chr, i, rec.POS)
+                  # Get right part of the k-mer
+                  kright = getSeq(fai, chr, del_end + 1, del_end + (k - ins_len - len(kleft)))
+                  # Merge both part of the k-mer targeting the insertion 
+                  kmer = kleft & ins_seq & kright
+                  # Get canonical k-mer
+                  kmer = canonicalKmer(kmer)
+                  # Add the kmer to the kmer array at this position
+                  vark.ref_kmers[i - ref_start].add(kmer)
+                  # Init the k-mer hash for this k-mer
+                  kmer_hash[kmer] = 0
+              else:
+                stderr.writeLine "Skip delins variant is too long for k-mer tagging"
 
         # Add the variant to the variant hash
         variant_hash[var_key] = vark
@@ -217,20 +345,21 @@ for record in b:
     continue
   # TODO skip bad sequence based on quality
   read = sequence(record, read)
-  revcomp_read = revcomp(read)
+  #revcomp_read = revcomp(read)
   nb_reads += 1
   if verbose and nb_reads mod 10000 == 0:
     stderr.writeLine nb_reads, " parsed ..."
 
   for i in 0..(len(read) - k):
     kmer = read[i .. i + k - 1]
-    revcomp_kmer = revcomp_read[i .. i + k - 1]
-    if kmer < revcomp_kmer:
-      canon_kmer = kmer
-    else:
-      canon_kmer = revcomp_kmer
-    if kmer_hash.hasKey(canon_kmer):
-      kmer_hash[canon_kmer] += 1
+    kmer = canonicalKmer(kmer)
+    # revcomp_kmer = revcomp_read[i .. i + k - 1]
+    # if kmer < revcomp_kmer:
+    #   canon_kmer = kmer
+    # else:
+    #   canon_kmer = revcomp_kmer
+    if kmer_hash.hasKey(kmer):
+      kmer_hash[kmer] += 1
 
 # Now we open the VCF a second time to print updated VAF
 var
@@ -243,8 +372,6 @@ var
   old_vaf : float32
 
 t = open(v, vcf)
-
-
 
 # Add headers for AO and AD (if not yet present)
 # ##INFO=<ID=AO,Number=A,Type=Integer,Description="Count of full observations of this alternate haplotype.">
@@ -276,8 +403,6 @@ for rec in v:
       vark = variant_hash[var_key]
       ref_median  = kmersMedian(kmer_hash, vark.ref_kmers)
       alt_median  = kmersMedian(kmer_hash, vark.alt_kmers)
-
-      # TODO We should handle cases with multi-allelic variants on the same loci !!!
 
       # We failed at finding k-mers for either the reference or the alternative
       # We therefor skip the recalibration

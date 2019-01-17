@@ -80,8 +80,10 @@ make
 
 ## TODO
 
-- Handle deletion with Multi-allelic variants. If we have other variants in front
-  of the deletion, we need to take them into account during the k-mer recalibration
-  otherwise we will overestimate the VAF of the deletion.
-  *For example : an homozygous variant in front of a small deletion, will likely cause
-  the recalibrated VAF to be around 1 even if in reality it is 0.01.*
+- Recalibrate other variant than just deletions
+- We could test the distribution of k-mer counts to see if there is somthing
+  abdnormal beforme recalibration the VAF with the median value.
+  Indeed if we have non specific k-mers targeting the variant or the reference
+  we could over (or under) estimate the VAF
+- A given k-mer should not be counted as both reference and alternative, it should
+  be specific.
